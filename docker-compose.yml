@@ -1,0 +1,93 @@
+version: "3.9"
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║                  FormRelay – Docker Compose              ║
+# ╠══════════════════════════════════════════════════════════╣
+# ║  Default (SQLite):  docker compose up --build            ║
+# ║  PostgreSQL:        docker compose --profile pg up -d    ║
+# ╚══════════════════════════════════════════════════════════╝
+
+services:
+
+  # ── Web app (always runs) ───────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: formrelay_web
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      # SQLite data persistence
+      - formrelay_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+        required: false     # only required when using --profile pg
+    networks:
+      - formrelay_net
+    labels:
+      - "com.formrelay.service=web"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── PostgreSQL (opt-in via --profile pg) ────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: formrelay_db
+    profiles: ["pg"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-formrelay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB:       ${POSTGRES_DB:-formrelay}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - formrelay_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-formrelay} -d ${POSTGRES_DB:-formrelay}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    labels:
+      - "com.formrelay.service=db"
+
+  # ── nginx reverse proxy (opt-in via --profile nginx) ─────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: formrelay_nginx
+    profiles: ["nginx"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/ssl:/etc/nginx/ssl:ro       # mount your certs here
+    depends_on:
+      - web
+    networks:
+      - formrelay_net
+    labels:
+      - "com.formrelay.service=nginx"
+
+volumes:
+  formrelay_data:
+    name: formrelay_data
+  postgres_data:
+    name: formrelay_postgres_data
+
+networks:
+  formrelay_net:
+    name: formrelay_net
+    driver: bridge
